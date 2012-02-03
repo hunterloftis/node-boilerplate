@@ -1,4 +1,4 @@
-version=`node --version`
+version=`~/local/node/bin/node --version`
 if [ "$version" = "v0.6.9" ]
 then
   echo "node v0.6.9 is already installed"

@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+
+. ./common.sh
+
+log "PROVISIONING LINODE ($@)"
+
+#
+# Provision the environment
+#
+
+environment() {
+  hr
+  log "setting up the environment"
+  script "root" "./linode/environment.sh"
+}
+
+#
+# Add users and public keys
+#
+
+# TODO: Pipe errors from the server back. Right now I think it will fail silently.
+keys() {
+  hr
+  log "adding admin public keys"
+  export allkeys="`awk 'FNR==1{print ""}1' $KEYS/*.pub`"
+  template "./linode/keys.sh"
+}
+
+#
+# Add deploy user
+#
+
+deployer() {
+  hr
+  log "setting up deployer user $PROJECTNAME@`config_get host`"
+  export deployer=$PROJECTNAME
+  export allkeys="`awk 'FNR==1{print ""}1' $KEYS/*.pub`"
+  export privatekeypath=`config_get private`
+  test -n "$privatekeypath" && export privatekey=`cat $privatekeypath` || export privatekey=""
+  export environment=`config_get environment`
+  export project=`config_get project`
+  template "./linode/deployer.sh"
+}
+
+#
+# Install node
+#
+
+node() {
+  if [[ `config_get stack` != 'node' ]]; then return 0; fi
+  hr
+  log "installing node" 
+  script $PROJECTNAME "./linode/node.sh"
+}
+
+#
+# Install upstart script
+#
+
+upstart() {
+  if [[ `config_get stack` != 'node' ]]; then return 0; fi
+  hr
+  log "configuring upstart"
+  export project=`config_get project`
+  export deployer=$PROJECTNAME
+  export path=$REMOTEPATH
+  template "./linode/upstart.sh"
+}
+
+#
+# Install mongo
+#
+
+mongo() {
+  if [[ `config_get stack` != 'node' ]]; then return 0; fi
+  hr
+  log "installing mongo"
+  script $USER "./linode/mongo.sh"
+}
+
+#
+# Install redis
+#
+
+redis() {
+  if [[ `config_get stack` != 'node' ]]; then return 0; fi
+  hr
+  log "installing redis"
+  script $USER "./linode/redis.sh"
+}
+
+#
+# Install nginx
+#
+
+nginx() {
+  if [[ `config_get stack` != 'nginx' ]]; then return 0; fi
+  log "installing nginx"
+  export deployer=$PROJECTNAME
+  template "./linode/nginx.sh"
+}
+
+#
+# Linode
+#
+
+provision() {
+  keys
+  deployer  
+  environment
+  node
+  upstart
+  mongo
+  redis
+  nginx  
+}
+
+#
+# Require environment arg.
+#
+
+require_env() {
+  config_section $ENV || abort "[$ENV] config section not found in deploy.conf"
+  test -z "$ENV" && usage && exit
+  test -z "$USER" && usage && exit
+
+  # settings that can be computed from the deploy.conf vars
+  PROJECTNAME=`config_get project`
+  test -z "$PROJECTNAME" && abort "project name must be specified in deploy.conf"
+  REMOTEPATH="/home/$PROJECTNAME/app"
+}
+
+# parse argv
+
+while test $# -ne 0; do
+  arg=$1; shift
+  case $arg in
+    -h|--help) usage; exit ;;
+    -V|--version) version; exit ;;
+    -C|--chdir) log cd $1; cd $1; shift ;;
+    all) require_env; all; exit ;;
+    keys) require_env; keys; exit ;;
+    deployer) require_env; deployer; exit ;;
+    environment) require_env; environment; exit ;;    
+    node) require_env; node; exit ;;
+    upstart) require_env; upstart; exit;;
+    mongo) require_env; mongo; exit ;;
+    redis) require_env; redis; exit ;;
+    nginx) require_env; nginx; exit ;;
+    config) config $@; exit ;;
+    *)
+      if test -z "$ENV"; then
+        ENV=$arg;
+      else
+        REF="$REF $arg";
+      fi
+      ;;
+  esac
+done
+
+require_env
+
+# provision
+provision

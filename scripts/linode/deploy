@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+
+. ./common.sh
+
+log "DEPLOYING LINODE ($@)"
+
+#
+# Run setup.
+#
+
+setup() {
+  local path=$REMOTEPATH
+  local repo=`config_get repo`
+  run $PROJECTNAME "mkdir -p $path/{shared/{logs,pids},source}"
+  test $? -eq 0 || abort setup paths failed
+  log running setup
+  log cloning $repo
+  run $PROJECTNAME "git clone $repo $path/source"
+  test $? -eq 0 || abort failed to clone
+  log setup complete
+}
+
+#
+# Deploy [ref].
+#
+
+deploy() {
+  local ref=$1
+  local path=$REMOTEPATH
+  log deploying
+
+  #hook pre-deploy || abort pre-deploy hook failed
+
+  # fetch source
+  log fetching updates
+  run $PROJECTNAME "cd $path/source && git fetch --all"
+  test $? -eq 0 || abort fetch failed
+
+  # latest tag
+  if test -z "$ref"; then
+    log fetching latest tag
+    ref=`run $PROJECTNAME "cd $path/source && git for-each-ref refs/tags \
+      --sort=-authordate \
+      --format='%(refname)' \
+      --count=1 | cut -d '/' -f 3"`
+    test $? -eq 0 || abort failed to determine latest tag
+  fi
+
+  # reset HEAD
+  log resetting HEAD to $ref
+  run $PROJECTNAME "cd $path/source && git reset --hard $ref"
+  test $? -eq 0 || abort git reset failed
+
+  # link current
+  run $PROJECTNAME "ln -sfn $path/source $path/current"
+  test $? -eq 0 || abort symlink failed
+
+  # deploy log
+  run $PROJECTNAME "cd $path/source && \
+      echo \`git rev-parse --short HEAD\` \
+      >> $path/.deploys"
+  test $? -eq 0 || abort deploy log append failed
+
+  hook "$POSTDEPLOY" || abort post-deploy hook failed
+
+  if test $TEST -eq 1; then
+    hook test
+    if test $? -ne 0; then
+      log tests failed, reverting deploy
+      quickly_revert_to 1 && log "revert complete" && exit
+    fi
+  else
+    log ignoring tests
+  fi
+
+  # done
+  log successfully deployed $ref
+}
+
+#
+# Get current commit.
+#
+
+current_commit() {
+  local path=$REMOTEPATH
+  run $PROJECTNAME "cd $path/source && \
+      git rev-parse --short HEAD"
+}
+
+#
+# Get <n>th deploy commit.
+#
+
+nth_deploy_commit() {
+  local n=$1
+  local path=$REMOTEPATH
+  run $PROJECTNAME "cat $path/.deploys | tail -n $n | head -n 1 | cut -d ' ' -f 1"
+}
+
+#
+# List deploys.
+#
+
+list_deploys() {
+  local path=$REMOTEPATH
+  run $PROJECTNAME "cat $path/.deploys"
+}
+
+#
+# Revert to the <n>th last deployment, ignoring tests.
+#
+
+quickly_revert_to() {
+  local n=$1
+  log "quickly reverting $n deploy(s)"
+  local commit=`nth_deploy_commit $((n + 1))`
+  TEST=0 deploy "$commit"
+}
+
+#
+# Revert to the <n>th last deployment.
+#
+
+revert_to() {
+  local n=$1
+  log "reverting $n deploy(s)"
+  local commit=`nth_deploy_commit $((n + 1))`
+  deploy "$commit"
+}
+
+#
+# Require environment arg.
+#
+
+require_env() {
+  config_section $ENV || abort "[$ENV] config section not defined"
+  test -z "$ENV" && abort "<env> required"
+
+  # settings that can be computed from the deploy.conf vars
+  PROJECTNAME=`config_get project`
+  test -z "$PROJECTNAME" && abort "project name must be specified in deploy.conf"
+  REMOTEPATH="/home/$PROJECTNAME/app"
+  POSTDEPLOY="source ~/.profile; npm install && [ -e /var/run/$PROJECTNAME.pid ] && sudo restart $PROJECTNAME || sudo start $PROJECTNAME"
+}
+
+# parse argv
+
+while test $# -ne 0; do
+  arg=$1; shift
+  case $arg in
+    -h|--help) usage; exit ;;
+    -V|--version) version; exit ;;
+    -c|--config) set_config_path $1; shift ;;
+    -C|--chdir) log cd $1; cd $1; shift ;;
+    -T|--no-tests) TEST=0 ;;
+    run|exec) require_env; run $PROJECTNAME "cd $REMOTEPATH && $@"; exit ;;
+    console) require_env; console; exit ;;
+    curr|current) require_env; current_commit; exit ;;
+    prev|previous) require_env; nth_deploy_commit 2; exit ;;
+    revert) require_env; revert_to ${1-1}; exit ;;
+    setup) require_env; setup $@; exit ;;
+    list) require_env; list_deploys; exit ;;
+    update) update; exit ;;
+    config) config $@; exit ;;
+    *)
+      if test -z "$ENV"; then
+        ENV=$arg;
+      else
+        REF="$REF $arg";
+      fi
+      ;;
+  esac
+done
+
+require_env
+
+# deploy
+deploy "${REF:-`config_get ref`}"
