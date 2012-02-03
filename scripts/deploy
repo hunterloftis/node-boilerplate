@@ -40,6 +40,9 @@ EOF
 #
 
 deploy() {
+  config_section $ENV || abort "[$ENV] config section not found in deploy.conf"
+  test -z "$ENV" && usage && exit
+
   INSTANCE=`config_get instance`
   case $INSTANCE in
     linode) invoke "./linode/deploy"; ;;
@@ -47,5 +50,21 @@ deploy() {
     *) abort "instance type must be specified in deploy.conf"; ;;
   esac
 }
+
+while test $# -ne 0; do
+  arg=$1; shift
+  case $arg in
+    -h|--help) usage; exit ;;
+    -V|--version) version; exit ;;
+    config) config $@; exit ;;
+    *)
+      if test -z "$ENV"; then
+        ENV=$arg;
+      else
+        REF="$REF $arg";
+      fi
+      ;;
+  esac
+done
 
 deploy
